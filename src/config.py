@@ -1,5 +1,7 @@
 """Configuration loading and validation for SentinelLog."""
 
+import ipaddress
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -62,6 +64,34 @@ def _require_positive_int(value: object, name: str) -> int:
     return value
 
 
+def _validate_whitelist_ips(raw: list[object]) -> list[str]:
+    """Validate whitelist IP entries, warning on any that are not valid IPs or CIDRs.
+
+    Args:
+        raw: Raw list of values from the YAML whitelist.ips field.
+
+    Returns:
+        List of entries that are valid IP addresses or CIDR ranges. Invalid
+        entries are skipped and a UserWarning is emitted for each one.
+    """
+    valid: list[str] = []
+    for entry in raw:
+        entry_str = str(entry)
+        try:
+            if "/" in entry_str:
+                ipaddress.ip_network(entry_str, strict=False)
+            else:
+                ipaddress.ip_address(entry_str)
+            valid.append(entry_str)
+        except ValueError:
+            warnings.warn(
+                f"Invalid whitelist IP entry ignored: {entry_str!r}",
+                UserWarning,
+                stacklevel=3,
+            )
+    return valid
+
+
 def load_config(path: Path) -> Config:
     """Load and parse a YAML config file.
 
@@ -92,6 +122,7 @@ def load_config(path: Path) -> Config:
         raise ValueError(f"Missing required config section: {exc}") from exc
 
     whitelist = data.get("whitelist", {})
+    whitelist_ips = _validate_whitelist_ips(whitelist.get("ips", []))
 
     return Config(
         brute_force_max_failures=_require_positive_int(bf.get("max_failures"), "brute_force.max_failures"),
@@ -102,6 +133,6 @@ def load_config(path: Path) -> Config:
         failed_sudo_window_seconds=_require_positive_int(fs.get("window_seconds"), "failed_sudo.window_seconds"),
         port_scan_min_distinct_ports=_require_positive_int(ps.get("min_distinct_ports"), "port_scan.min_distinct_ports"),
         port_scan_window_seconds=_require_positive_int(ps.get("window_seconds"), "port_scan.window_seconds"),
-        whitelist_ips=whitelist.get("ips", []),
+        whitelist_ips=whitelist_ips,
         whitelist_users=whitelist.get("users", []),
     )

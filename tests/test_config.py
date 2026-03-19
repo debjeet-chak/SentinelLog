@@ -106,6 +106,19 @@ class TestLoadConfig:
         with pytest.raises(ValueError, match="brute_force.max_failures"):
             load_config(cfg)
 
+    def test_invalid_whitelist_ip_emits_warning(self, tmp_path: Path) -> None:
+        """Emits a warning for each invalid IP in the whitelist; valid entries still loaded."""
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(VALID_YAML.replace(
+            "ips: []",
+            "ips:\n        - 10.0.0.1\n        - not-an-ip\n        - 192.168.1.0/24",
+        ))
+        with pytest.warns(UserWarning, match="not-an-ip"):
+            config = load_config(cfg)
+        # Valid entries are still present after the warning
+        assert "10.0.0.1" in config.whitelist_ips
+        assert "192.168.1.0/24" in config.whitelist_ips
+
     def test_missing_section_raises(self, tmp_path: Path) -> None:
         """Raises ValueError with a clear message when a required section is missing."""
         cfg = tmp_path / "config.yaml"
