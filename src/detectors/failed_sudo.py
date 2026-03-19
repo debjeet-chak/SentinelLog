@@ -7,7 +7,12 @@ from datetime import timedelta
 from src.detectors.base import BaseDetector
 from src.models import LogEntry, Threat, ThreatLevel
 
-_SUDO_FAIL_RE = re.compile(r"authentication failure", re.IGNORECASE)
+# Require pam_unix(sudo...) context to avoid matching SSH authentication
+# failure messages, which share the phrase "authentication failure".
+_SUDO_FAIL_RE = re.compile(
+    r"pam_unix\(sudo[^)]*\).*authentication failure",
+    re.IGNORECASE,
+)
 
 
 class FailedSudoDetector(BaseDetector):
@@ -36,9 +41,10 @@ class FailedSudoDetector(BaseDetector):
 
         threats: list[Threat] = []
         for username, user_entries in failures.items():
-            user_entries = sorted(user_entries, key=lambda e: e.timestamp)
-            max_count = self._max_in_window(user_entries, window)
+            sorted_entries = sorted(user_entries, key=lambda e: e.timestamp)
+            max_count, first_seen, last_seen = self._max_in_window(sorted_entries, window)
             if max_count >= threshold:
+                assert first_seen is not None and last_seen is not None
                 threats.append(
                     Threat(
                         level=ThreatLevel.MEDIUM,
@@ -49,22 +55,9 @@ class FailedSudoDetector(BaseDetector):
                             f"within {self._config.failed_sudo_window_seconds}s"
                         ),
                         count=max_count,
-                        first_seen=user_entries[0].timestamp,
-                        last_seen=user_entries[-1].timestamp,
+                        first_seen=first_seen,
+                        last_seen=last_seen,
                         username=username,
                     )
                 )
         return threats
-
-    @staticmethod
-    def _max_in_window(entries: list[LogEntry], window: timedelta) -> int:
-        """Sliding-window count: max entries within any window-length span."""
-        if not entries:
-            return 0
-        max_count = 0
-        left = 0
-        for right in range(len(entries)):
-            while entries[right].timestamp - entries[left].timestamp > window:
-                left += 1
-            max_count = max(max_count, right - left + 1)
-        return max_count

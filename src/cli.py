@@ -20,7 +20,7 @@ def cli() -> None:
 
 
 @cli.command()
-@click.argument("logfile", type=click.Path(exists=False))
+@click.argument("logfile", type=click.Path(exists=True, readable=True, path_type=Path))
 @click.option(
     "--config",
     "config_path",
@@ -36,21 +36,16 @@ def cli() -> None:
     show_default=True,
     help="Output format.",
 )
-def analyze(logfile: str, config_path: str | None, output_format: str) -> None:
+def analyze(logfile: Path, config_path: str | None, output_format: str) -> None:
     """Analyze LOGFILE for threats and report results.
 
     Exits with code 0 if no threats found, 1 if threats detected, 2 on error.
     """
-    log_path = Path(logfile)
-    if not log_path.exists():
-        click.echo(f"Error: Log file not found: {log_path}", err=True)
-        sys.exit(2)
-
     # Load config
     if config_path:
         try:
             config: Config = load_config(Path(config_path))
-        except FileNotFoundError as exc:
+        except (FileNotFoundError, ValueError) as exc:
             click.echo(f"Error: {exc}", err=True)
             sys.exit(2)
     else:
@@ -58,7 +53,7 @@ def analyze(logfile: str, config_path: str | None, output_format: str) -> None:
 
     # Parse
     parser = AuthLogParser()
-    entries = parser.parse_file(log_path)
+    entries = parser.parse_file(logfile)
 
     # Detect
     detectors = [

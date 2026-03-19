@@ -2,17 +2,18 @@
 
 from datetime import datetime, timedelta
 
-import pytest
-
 from src.config import Config
 from src.detectors.failed_sudo import FailedSudoDetector
 from src.models import LogEntry, ThreatLevel
+
+# Realistic sudo failure message matching the tightened regex
+_SUDO_MSG = "pam_unix(sudo:auth): authentication failure; logname=bob uid=1000 euid=0 user=bob"
 
 
 def make_sudo_entry(
     username: str,
     offset_seconds: int = 0,
-    message: str = "authentication failure",
+    message: str = _SUDO_MSG,
     base: datetime | None = None,
 ) -> LogEntry:
     base = base or datetime(2024, 1, 15, 12, 0, 0)
@@ -79,11 +80,20 @@ class TestFailedSudoDetector:
         entries = [make_sudo_entry("admin", offset_seconds=i * 10) for i in range(5)]
         assert detector.analyze(entries) == []
 
-    def test_ignores_non_sudo_messages(self) -> None:
-        """Does not count SSH or other non-sudo messages."""
+    def test_ignores_ssh_failure_messages(self) -> None:
+        """Does not count SSH 'Failed password' messages — only sudo-specific patterns."""
         detector = FailedSudoDetector(make_config(max_failures=3))
         entries = [
-            make_sudo_entry("carol", offset_seconds=i, message="Failed password ssh")
+            make_sudo_entry("carol", offset_seconds=i, message="Failed password for carol from 1.2.3.4 port 22 ssh2")
+            for i in range(5)
+        ]
+        assert detector.analyze(entries) == []
+
+    def test_ignores_bare_auth_failure_without_sudo_context(self) -> None:
+        """A bare 'authentication failure' without pam_unix(sudo) does not trigger."""
+        detector = FailedSudoDetector(make_config(max_failures=3))
+        entries = [
+            make_sudo_entry("dave", offset_seconds=i, message="authentication failure")
             for i in range(5)
         ]
         assert detector.analyze(entries) == []
@@ -95,10 +105,25 @@ class TestFailedSudoDetector:
             timestamp=datetime.now(),
             source_ip="1.2.3.4",
             username=None,
-            message="authentication failure",
+            message=_SUDO_MSG,
             raw_line="raw",
         )
         assert detector.analyze([entry]) == []
+
+    def test_first_last_seen_reflect_triggering_window(self) -> None:
+        """first_seen and last_seen bound the burst window, not the full user history."""
+        base = datetime(2024, 1, 15, 12, 0, 0)
+        config = make_config(max_failures=3, window=120)
+        detector = FailedSudoDetector(config)
+        # 2 old failures that won't trigger on their own
+        old = [make_sudo_entry("eve", offset_seconds=i * 10, base=base) for i in range(2)]
+        # 10-minute gap, then a burst of 3 within 30 seconds
+        burst_base = base + timedelta(minutes=10)
+        burst = [make_sudo_entry("eve", offset_seconds=i * 15, base=burst_base) for i in range(3)]
+        threats = detector.analyze(old + burst)
+        assert len(threats) == 1
+        assert threats[0].first_seen >= burst_base
+        assert threats[0].last_seen == burst_base + timedelta(seconds=30)
 
     def test_empty_input(self) -> None:
         """Returns empty list for empty input."""

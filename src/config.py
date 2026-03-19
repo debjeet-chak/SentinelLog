@@ -1,6 +1,6 @@
 """Configuration loading and validation for SentinelLog."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
@@ -38,6 +38,30 @@ class Config:
         )
 
 
+def _require_positive_int(value: object, name: str) -> int:
+    """Validate that value is a positive integer.
+
+    Args:
+        value: The raw value from YAML.
+        name: Dotted config key name for error messages (e.g. "brute_force.max_failures").
+
+    Returns:
+        The value as an int.
+
+    Raises:
+        ValueError: If value is not a positive integer.
+    """
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ValueError(
+            f"Config '{name}' must be a positive integer, got: {value!r}"
+        )
+    if value < 1:
+        raise ValueError(
+            f"Config '{name}' must be >= 1, got: {value}"
+        )
+    return value
+
+
 def load_config(path: Path) -> Config:
     """Load and parse a YAML config file.
 
@@ -49,7 +73,7 @@ def load_config(path: Path) -> Config:
 
     Raises:
         FileNotFoundError: If the config file does not exist.
-        KeyError: If required config keys are missing.
+        ValueError: If required keys are missing or values are invalid.
     """
     if not path.exists():
         raise FileNotFoundError(f"Config file not found: {path}")
@@ -58,21 +82,26 @@ def load_config(path: Path) -> Config:
         data = yaml.safe_load(f)
 
     thresholds = data.get("thresholds", {})
-    bf = thresholds.get("brute_force", {})
-    si = thresholds.get("suspicious_ip", {})
-    fs = thresholds.get("failed_sudo", {})
-    ps = thresholds.get("port_scan", {})
+
+    try:
+        bf = thresholds["brute_force"]
+        si = thresholds["suspicious_ip"]
+        fs = thresholds["failed_sudo"]
+        ps = thresholds["port_scan"]
+    except KeyError as exc:
+        raise ValueError(f"Missing required config section: {exc}") from exc
+
     whitelist = data.get("whitelist", {})
 
     return Config(
-        brute_force_max_failures=bf["max_failures"],
-        brute_force_window_seconds=bf["window_seconds"],
-        suspicious_ip_max_requests=si["max_requests"],
-        suspicious_ip_window_seconds=si["window_seconds"],
-        failed_sudo_max_failures=fs["max_failures"],
-        failed_sudo_window_seconds=fs["window_seconds"],
-        port_scan_min_distinct_ports=ps["min_distinct_ports"],
-        port_scan_window_seconds=ps["window_seconds"],
+        brute_force_max_failures=_require_positive_int(bf.get("max_failures"), "brute_force.max_failures"),
+        brute_force_window_seconds=_require_positive_int(bf.get("window_seconds"), "brute_force.window_seconds"),
+        suspicious_ip_max_requests=_require_positive_int(si.get("max_requests"), "suspicious_ip.max_requests"),
+        suspicious_ip_window_seconds=_require_positive_int(si.get("window_seconds"), "suspicious_ip.window_seconds"),
+        failed_sudo_max_failures=_require_positive_int(fs.get("max_failures"), "failed_sudo.max_failures"),
+        failed_sudo_window_seconds=_require_positive_int(fs.get("window_seconds"), "failed_sudo.window_seconds"),
+        port_scan_min_distinct_ports=_require_positive_int(ps.get("min_distinct_ports"), "port_scan.min_distinct_ports"),
+        port_scan_window_seconds=_require_positive_int(ps.get("window_seconds"), "port_scan.window_seconds"),
         whitelist_ips=whitelist.get("ips", []),
         whitelist_users=whitelist.get("users", []),
     )

@@ -1,4 +1,11 @@
-"""Detector for high-frequency activity from a single IP."""
+"""Detector for high-frequency activity from a single IP.
+
+Note: This detector counts all log entries from an IP regardless of message
+content — including successful requests. It is intended to surface IPs that
+are unusually noisy (scrapers, scanners, misbehaving clients). Legitimate
+high-volume sources (load balancers, monitoring agents) should be whitelisted
+in the config.
+"""
 
 from collections import defaultdict
 from datetime import timedelta
@@ -26,15 +33,16 @@ class SuspiciousIPDetector(BaseDetector):
         for entry in entries:
             if entry.source_ip is None:
                 continue
-            if entry.source_ip in self._config.whitelist_ips:
+            if self._is_whitelisted_ip(entry.source_ip, self._config.whitelist_ips):
                 continue
             by_ip[entry.source_ip].append(entry)
 
         threats: list[Threat] = []
         for ip, ip_entries in by_ip.items():
-            ip_entries = sorted(ip_entries, key=lambda e: e.timestamp)
-            max_count = self._max_in_window(ip_entries, window)
+            sorted_entries = sorted(ip_entries, key=lambda e: e.timestamp)
+            max_count, first_seen, last_seen = self._max_in_window(sorted_entries, window)
             if max_count >= threshold:
+                assert first_seen is not None and last_seen is not None
                 threats.append(
                     Threat(
                         level=ThreatLevel.MEDIUM,
@@ -45,21 +53,8 @@ class SuspiciousIPDetector(BaseDetector):
                             f"{self._config.suspicious_ip_window_seconds}s"
                         ),
                         count=max_count,
-                        first_seen=ip_entries[0].timestamp,
-                        last_seen=ip_entries[-1].timestamp,
+                        first_seen=first_seen,
+                        last_seen=last_seen,
                     )
                 )
         return threats
-
-    @staticmethod
-    def _max_in_window(entries: list[LogEntry], window: timedelta) -> int:
-        """Sliding-window count: max entries within any window-length span."""
-        if not entries:
-            return 0
-        max_count = 0
-        left = 0
-        for right in range(len(entries)):
-            while entries[right].timestamp - entries[left].timestamp > window:
-                left += 1
-            max_count = max(max_count, right - left + 1)
-        return max_count

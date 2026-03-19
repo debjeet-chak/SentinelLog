@@ -1,5 +1,6 @@
 """Tests for the Click CLI entrypoint."""
 
+import json
 import textwrap
 from pathlib import Path
 
@@ -65,27 +66,56 @@ class TestAnalyzeCommand:
 
     def test_analyze_json_format(self, sample_log: Path, config_file: Path) -> None:
         """JSON output mode produces valid JSON."""
-        import json
         runner = CliRunner()
         result = runner.invoke(
             cli,
             ["analyze", str(sample_log), "--config", str(config_file), "--format", "json"],
         )
-        # JSON output should be parseable regardless of exit code
         parsed = json.loads(result.output)
         assert isinstance(parsed, list)
 
     def test_analyze_missing_log_file(self, config_file: Path) -> None:
-        """Exits with error message for missing log file."""
+        """Exits 2 for a missing log file."""
         runner = CliRunner()
         result = runner.invoke(cli, ["analyze", "/no/such/file.log", "--config", str(config_file)])
+        assert result.exit_code == 2
+
+    def test_analyze_missing_config_file(self, sample_log: Path) -> None:
+        """Exits 2 with an error message when --config points to a nonexistent file."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["analyze", str(sample_log), "--config", "/no/such/config.yaml"])
+        assert result.exit_code == 2
+
+    def test_analyze_invalid_config_values(self, sample_log: Path, tmp_path: Path) -> None:
+        """Exits 2 with an error message for a malformed config."""
+        bad_cfg = tmp_path / "bad.yaml"
+        bad_cfg.write_text(textwrap.dedent("""\
+            thresholds:
+              brute_force:
+                max_failures: 0
+                window_seconds: 60
+              suspicious_ip:
+                max_requests: 100
+                window_seconds: 300
+              failed_sudo:
+                max_failures: 3
+                window_seconds: 120
+              port_scan:
+                min_distinct_ports: 10
+                window_seconds: 60
+            whitelist:
+              ips: []
+              users: []
+        """))
+        runner = CliRunner()
+        result = runner.invoke(cli, ["analyze", str(sample_log), "--config", str(bad_cfg)])
         assert result.exit_code == 2
 
     def test_analyze_default_config(self, sample_log: Path) -> None:
         """Works without --config flag using built-in defaults."""
         runner = CliRunner()
         result = runner.invoke(cli, ["analyze", str(sample_log)])
-        assert result.exit_code in (0, 1)  # Either is fine — just shouldn't crash
+        assert result.exit_code in (0, 1)
 
     def test_analyze_uses_table_format_by_default(
         self, sample_log: Path, config_file: Path
@@ -93,5 +123,4 @@ class TestAnalyzeCommand:
         """Default output is table format (no --format flag required)."""
         runner = CliRunner()
         result = runner.invoke(cli, ["analyze", str(sample_log), "--config", str(config_file)])
-        # Should not crash and should produce some output
         assert result.output or result.exit_code in (0, 1)

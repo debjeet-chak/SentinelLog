@@ -2,8 +2,6 @@
 
 from datetime import datetime, timedelta
 
-import pytest
-
 from src.config import Config
 from src.detectors.port_scan import PortScanDetector
 from src.models import LogEntry, ThreatLevel
@@ -82,8 +80,56 @@ class TestPortScanDetector:
         entries = [make_entry("2.2.2.2", port=100 + i, offset_seconds=i) for i in range(10)]
         assert detector.analyze(entries) == []
 
+    def test_cidr_whitelisted_ip_ignored(self) -> None:
+        """IPs within a whitelisted CIDR range are not flagged."""
+        config = Config(
+            brute_force_max_failures=5,
+            brute_force_window_seconds=60,
+            suspicious_ip_max_requests=100,
+            suspicious_ip_window_seconds=300,
+            failed_sudo_max_failures=3,
+            failed_sudo_window_seconds=120,
+            port_scan_min_distinct_ports=3,
+            port_scan_window_seconds=60,
+            whitelist_ips=["172.16.0.0/12"],
+            whitelist_users=[],
+        )
+        detector = PortScanDetector(config)
+        entries = [make_entry("172.16.5.1", port=100 + i, offset_seconds=i) for i in range(10)]
+        assert detector.analyze(entries) == []
+
+    def test_port_zero_ignored(self) -> None:
+        """Port 0 is not a valid destination port and must be ignored."""
+        detector = PortScanDetector(make_config(min_ports=3))
+        entries = [
+            LogEntry(
+                timestamp=datetime(2024, 1, 15, 8, 0, i),
+                source_ip="5.5.5.5",
+                username=None,
+                message=f"probe port 0",
+                raw_line=f"raw port=0",
+            )
+            for i in range(5)
+        ]
+        assert detector.analyze(entries) == []
+
+    def test_port_out_of_range_ignored(self) -> None:
+        """Port numbers above 65535 are invalid and must be ignored."""
+        detector = PortScanDetector(make_config(min_ports=3))
+        entries = [
+            LogEntry(
+                timestamp=datetime(2024, 1, 15, 8, 0, i),
+                source_ip="6.6.6.6",
+                username=None,
+                message="probe",
+                raw_line=f"raw port={70000 + i}",
+            )
+            for i in range(5)
+        ]
+        assert detector.analyze(entries) == []
+
     def test_port_extracted_from_message(self) -> None:
-        """Detector extracts port number from the message text."""
+        """Detector extracts port number from the raw log line."""
         detector = PortScanDetector(make_config(min_ports=3, window=60))
         entries = [make_entry("9.9.9.1", port=3000 + i, offset_seconds=i * 2) for i in range(3)]
         threats = detector.analyze(entries)

@@ -2,12 +2,15 @@
 
 import re
 from collections import defaultdict
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from src.detectors.base import BaseDetector
 from src.models import LogEntry, Threat, ThreatLevel
 
 _PORT_RE = re.compile(r"\bport[=\s]+(\d+)", re.IGNORECASE)
+
+_MIN_PORT = 1
+_MAX_PORT = 65535
 
 
 class PortScanDetector(BaseDetector):
@@ -29,7 +32,7 @@ class PortScanDetector(BaseDetector):
         for entry in entries:
             if entry.source_ip is None:
                 continue
-            if entry.source_ip in self._config.whitelist_ips:
+            if self._is_whitelisted_ip(entry.source_ip, self._config.whitelist_ips):
                 continue
             port = self._extract_port(entry.raw_line)
             if port is not None:
@@ -37,8 +40,8 @@ class PortScanDetector(BaseDetector):
 
         threats: list[Threat] = []
         for ip, port_entries in by_ip.items():
-            port_entries = sorted(port_entries, key=lambda x: x[1].timestamp)
-            max_ports, span = self._max_distinct_ports_in_window(port_entries, window)
+            sorted_entries = sorted(port_entries, key=lambda x: x[1].timestamp)
+            max_ports, span = self._max_distinct_ports_in_window(sorted_entries, window)
             if max_ports >= threshold and span:
                 first, last = span
                 threats.append(
@@ -59,25 +62,36 @@ class PortScanDetector(BaseDetector):
 
     @staticmethod
     def _extract_port(text: str) -> int | None:
-        """Extract a port number from a raw log line."""
+        """Extract and validate a port number from a raw log line.
+
+        Returns None if no port is found or the port is outside [1, 65535].
+        """
         m = _PORT_RE.search(text)
-        return int(m.group(1)) if m else None
+        if not m:
+            return None
+        port = int(m.group(1))
+        return port if _MIN_PORT <= port <= _MAX_PORT else None
 
     @staticmethod
     def _max_distinct_ports_in_window(
         port_entries: list[tuple[int, LogEntry]],
         window: timedelta,
-    ) -> tuple[int, tuple | None]:
+    ) -> tuple[int, tuple[datetime, datetime] | None]:
         """Sliding-window: find max distinct ports within any window span.
 
+        Args:
+            port_entries: (port, entry) pairs sorted by entry timestamp ascending.
+            window: Maximum time span of the window (inclusive on both ends).
+
         Returns:
-            Tuple of (max_distinct_port_count, (first_ts, last_ts)) or (0, None).
+            (max_distinct_port_count, (first_ts, last_ts)) for the best window,
+            or (0, None) if port_entries is empty.
         """
         if not port_entries:
             return 0, None
 
         best = 0
-        best_span: tuple | None = None
+        best_span: tuple[datetime, datetime] | None = None
         left = 0
 
         for right in range(len(port_entries)):

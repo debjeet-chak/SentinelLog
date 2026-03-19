@@ -2,8 +2,6 @@
 
 from datetime import datetime, timedelta
 
-import pytest
-
 from src.config import Config
 from src.detectors.brute_force import BruteForceDetector
 from src.models import LogEntry, ThreatLevel
@@ -91,6 +89,21 @@ class TestBruteForceDetector:
         threats = detector.analyze(entries)
         assert threats == []
 
+    def test_sudo_auth_failure_does_not_trigger_brute_force(self) -> None:
+        """sudo 'authentication failure' messages do not count as SSH brute force."""
+        detector = BruteForceDetector(make_config(max_failures=3, window=60))
+        entries = [
+            make_entry(
+                "10.0.0.6",
+                offset_seconds=i * 5,
+                message="pam_unix(sudo:auth): authentication failure; user=alice",
+            )
+            for i in range(5)
+        ]
+        # The BruteForceDetector should not fire on sudo-specific messages
+        threats = detector.analyze(entries)
+        assert threats == []
+
     def test_whitelisted_ip_ignored(self) -> None:
         """Does not flag IPs in the whitelist."""
         config = Config(
@@ -112,6 +125,27 @@ class TestBruteForceDetector:
         ]
         threats = detector.analyze(entries)
         assert threats == []
+
+    def test_cidr_whitelisted_ip_ignored(self) -> None:
+        """IPs within a whitelisted CIDR range are not flagged."""
+        config = Config(
+            brute_force_max_failures=3,
+            brute_force_window_seconds=60,
+            suspicious_ip_max_requests=100,
+            suspicious_ip_window_seconds=300,
+            failed_sudo_max_failures=3,
+            failed_sudo_window_seconds=120,
+            port_scan_min_distinct_ports=10,
+            port_scan_window_seconds=60,
+            whitelist_ips=["10.0.0.0/24"],
+            whitelist_users=[],
+        )
+        detector = BruteForceDetector(config)
+        entries = [
+            make_entry("10.0.0.50", offset_seconds=i * 5, message="Failed password")
+            for i in range(5)
+        ]
+        assert detector.analyze(entries) == []
 
     def test_multiple_ips_independent(self) -> None:
         """Each IP is assessed independently; only those over threshold flagged."""
@@ -137,6 +171,21 @@ class TestBruteForceDetector:
         threats = detector.analyze(entries)
         assert len(threats) == 1
         assert threats[0].level == ThreatLevel.CRITICAL
+
+    def test_first_last_seen_reflect_triggering_window(self) -> None:
+        """first_seen and last_seen bound the burst window, not the full IP history."""
+        base = datetime(2024, 1, 15, 10, 0, 0)
+        config = make_config(max_failures=3, window=60)
+        detector = BruteForceDetector(config)
+        # 2 old failures — won't trigger on their own
+        old = [make_entry("10.0.0.9", offset_seconds=i * 5, message="Failed password", base=base) for i in range(2)]
+        # 5-minute gap, then a burst of 3 within 20 seconds
+        burst_base = base + timedelta(minutes=5)
+        burst = [make_entry("10.0.0.9", offset_seconds=i * 10, message="Failed password", base=burst_base) for i in range(3)]
+        threats = detector.analyze(old + burst)
+        assert len(threats) == 1
+        assert threats[0].first_seen >= burst_base
+        assert threats[0].last_seen == burst_base + timedelta(seconds=20)
 
     def test_empty_entries(self) -> None:
         """Returns empty list for empty input."""
