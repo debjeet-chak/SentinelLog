@@ -1,0 +1,21 @@
+thresholds:
+  brute_force:
+    max_failures: 5        # failed attempts before flagging
+    window_seconds: 60     # time window to count failures within
+  suspicious_ip:
+    max_requests: 100      # requests per window before flagging
+    window_seconds: 300
+  failed_sudo:
+    max_failures: 3        # sudo failures before flagging
+    window_seconds: 120
+  port_scan:
+    min_distinct_ports: 10 # unique ports hit before flagging
+    window_seconds: 60
+
+whitelist:
+  ips: []                  # IPs to never flag, e.g. ["10.0.0.1", "192.168.1.0/24"]
+  users: []                # usernames to exclude from sudo alerts
+
+log_paths:
+  - /var/log/auth.log
+  - /var/log/syslog
