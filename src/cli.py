@@ -11,7 +11,7 @@ from src.detectors.failed_sudo import FailedSudoDetector
 from src.detectors.port_scan import PortScanDetector
 from src.detectors.suspicious_ip import SuspiciousIPDetector
 from src.parsers.auth_log import AuthLogParser
-from src.reporter import Reporter, format_threats_json
+from src.reporter import render_json, render_table
 
 
 @click.group()
@@ -68,9 +68,8 @@ def analyze(logfile: Path, config_path: str | None, output_format: str) -> None:
 
     # Report
     if output_format == "json":
-        click.echo(format_threats_json(threats))
+        click.echo(render_json(threats))
     else:
-        reporter = Reporter()
-        reporter.print_table(threats)
+        click.echo(render_table(threats), nl=False)
 
     sys.exit(1 if threats else 0)
